@@ -328,7 +328,14 @@ def is_admin(interaction):
 @bot.event
 async def on_ready():
     print(f"[BOT] Online como {bot.user}")
-    await tree.sync()
+    guild_id = os.environ.get("GUILD_ID", "")
+    if guild_id:
+        guild = discord.Object(id=int(guild_id))
+        tree.copy_global_to(guild=guild)
+        await tree.sync(guild=guild)
+        print(f"[BOT] Comandos sincronizados no servidor {guild_id}")
+    else:
+        await tree.sync()
     await enviar_loja_persistente()
 
 async def enviar_loja_persistente():
