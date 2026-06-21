@@ -21,17 +21,24 @@ TIERS = {
     "absolute": {"name": "Absolute", "trial_hours": 0, "cor": 0xFF4444, "emoji": "🔴"},
 }
 
-# ─── Database abstraction (SQLite local / PostgreSQL on Railway) ───
-
 class Database:
     def __init__(self):
         self.use_pg = bool(DATABASE_URL)
+        self.pg_ok = False
         if self.use_pg:
             import psycopg2
             self.psycopg2 = psycopg2
+            try:
+                conn = self.psycopg2.connect(DATABASE_URL, connect_timeout=5)
+                conn.close()
+                self.pg_ok = True
+                print("[DB] PostgreSQL conectado")
+            except Exception as e:
+                print(f"[DB] PostgreSQL falhou ({e}), usando SQLite")
+                self.use_pg = False
 
     def get_conn(self):
-        if self.use_pg:
+        if self.use_pg and self.pg_ok:
             return self.psycopg2.connect(DATABASE_URL)
         return sqlite3.connect(DB_PATH)
 
@@ -118,12 +125,8 @@ class Database:
     def insert_key(self, key_code, tier, discord_id=None, created_at=None):
         if created_at is None:
             created_at = datetime.utcnow().isoformat()
-        if self.use_pg:
-            self.execute("INSERT INTO keys (key_code, tier, discord_id, status, created_at) VALUES (?, ?, ?, 'active', ?)",
-                         (key_code, tier, discord_id, created_at))
-        else:
-            self.execute("INSERT INTO keys (key_code, tier, discord_id, status, created_at) VALUES (?, ?, ?, 'active', ?)",
-                         (key_code, tier, discord_id, created_at))
+        self.execute("INSERT INTO keys (key_code, tier, discord_id, status, created_at) VALUES (?, ?, ?, 'active', ?)",
+                     (key_code, tier, discord_id, created_at))
 
     def find_key(self, key_code):
         return self.fetchone("SELECT tier, discord_id, hwid, status, activated_at FROM keys WHERE key_code = ?", (key_code,))
@@ -171,8 +174,6 @@ class Database:
 
 db = Database()
 
-# ─── Config: env vars > config file ───
-
 DEFAULT_CONFIG = {
     "bot_token": "SEU_TOKEN_AQUI",
     "admin_ids": [123456789012345678],
@@ -195,7 +196,6 @@ def load_config():
     for k, v in DEFAULT_CONFIG.items():
         cfg.setdefault(k, v)
 
-    # Env vars override
     if os.environ.get("BOT_TOKEN"):
         cfg["bot_token"] = os.environ["BOT_TOKEN"]
     if os.environ.get("ADMIN_IDS"):
@@ -235,8 +235,6 @@ def generate_key():
     chars = string.ascii_uppercase + string.digits
     return '-'.join(''.join(secrets.choice(chars) for _ in range(4)) for _ in range(4))
 
-# ─── Pix QR Code generator (optional) ───
-
 def gerar_qrcode_pix(chave, nome, cidade, valor=None):
     try:
         import qrcode
@@ -259,8 +257,6 @@ def gerar_qrcode_pix(chave, nome, cidade, valor=None):
     img.save(buf, format='PNG')
     buf.seek(0)
     return buf
-
-# ─── API Routes ───
 
 app_flask = Flask(__name__)
 
@@ -315,8 +311,6 @@ def ativar_trial():
 def info():
     return jsonify({"sistema": "REGIS OAP Licensing", "versao": "1.0", "discord": config.get("discord_invite", "")})
 
-# ─── Discord Bot ───
-
 intents = discord.Intents.default()
 intents.message_content = True
 bot = discord.Client(intents=intents)
@@ -370,8 +364,6 @@ def criar_embed_loja():
     embed.set_footer(text="REGIS OAP - Licensing v1.0")
     return embed
 
-# ─── Loja / Tickets ───
-
 class TierButton(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -393,7 +385,6 @@ async def criar_ticket(interaction: discord.Interaction, tier: str):
     if not guild:
         return await interaction.response.send_message("Use este comando no servidor.", ephemeral=True)
 
-    # Check if user already has open ticket
     existing = db.find_open_ticket(str(interaction.user.id))
     if existing:
         ch = guild.get_channel(int(existing[0]))
@@ -403,7 +394,6 @@ async def criar_ticket(interaction: discord.Interaction, tier: str):
 
     await interaction.response.defer(ephemeral=True)
 
-    # Find category
     category = None
     if CATEGORIA_TICKETS:
         category = discord.utils.get(guild.categories, id=int(CATEGORIA_TICKETS))
@@ -412,7 +402,6 @@ async def criar_ticket(interaction: discord.Interaction, tier: str):
     if not category:
         category = await guild.create_category("TICKETS")
 
-    # Create channel
     overwrites = {
         guild.default_role: discord.PermissionOverwrite(read_messages=False),
         interaction.user: discord.PermissionOverwrite(read_messages=True, send_messages=True),
@@ -445,7 +434,6 @@ async def criar_ticket(interaction: discord.Interaction, tier: str):
     embed.set_footer(text=f"Ticket de {interaction.user.name}")
     embed.timestamp = datetime.utcnow()
 
-    # QR Code
     qr = gerar_qrcode_pix(PIX.get("chave", ""), PIX.get("nome", ""), PIX.get("cidade", ""), valor=preco)
     qr_file = None
     if qr:
@@ -457,7 +445,6 @@ async def criar_ticket(interaction: discord.Interaction, tier: str):
 
     await interaction.followup.send(f"Ticket criado: {channel.mention}", ephemeral=True)
 
-    # Ping admins
     admin_pings = " ".join(f"<@{aid}>" for aid in ADMIN_IDS)
     await channel.send(f"{admin_pings} Novo ticket {tier.upper()} de {interaction.user.mention}!", delete_after=5)
 
@@ -489,7 +476,6 @@ async def confirmar_pagamento(interaction: discord.Interaction, tier: str):
     user_id, tier_from_topic = topic.split("|", 1)
     user = interaction.guild.get_member(int(user_id))
 
-    # Generate and deliver key
     key = generate_key()
     db.insert_key(key, tier, user_id)
     db.use_key(key)
@@ -524,8 +510,6 @@ async def fechar_ticket(interaction: discord.Interaction):
         await asyncio.sleep(3)
         await interaction.channel.delete()
 
-
-# ─── Commands ───
 
 @tree.command(name="set_loja", description="[ADMIN] Define este canal como loja permanente")
 async def set_loja(interaction: discord.Interaction):
@@ -619,8 +603,6 @@ async def revogar_key(interaction: discord.Interaction, key: str):
     await interaction.response.send_message(f"Key `{key.upper()}` revogada.", ephemeral=True)
 
 
-# ─── User Commands ───
-
 @tree.command(name="ativar", description="Vincula uma key ao seu Discord")
 async def ativar_key(interaction: discord.Interaction, key: str):
     key = key.upper().strip()
@@ -671,8 +653,6 @@ async def ajuda(interaction: discord.Interaction):
     embed.add_field(name="Comprar", value=f"Use `/loja` ou entre no servidor: {config.get('discord_invite', 'Discord')}", inline=False)
     await interaction.response.send_message(embed=embed)
 
-
-# ─── Runner ───
 
 import asyncio
 
