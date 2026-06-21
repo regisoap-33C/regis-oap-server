@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+*.spec
+
+# Database / license files
+*.db
+sys_oap_*.dat
+sys_oap_*.db
+
+# Config with secrets — you provide a clean template for deployment
+config_licencia.json
+
+# Temp
+*.log
+*.tmp
